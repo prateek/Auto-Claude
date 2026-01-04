@@ -76,6 +76,7 @@ def handle_qa_command(
     spec_dir: Path,
     model: str,
     verbose: bool = False,
+    agent_backend: str | None = None,
 ) -> None:
     """
     Handle the --qa command (run QA validation loop).
@@ -88,7 +89,7 @@ def handle_qa_command(
     """
     print_banner()
     print(f"\nRunning QA validation for: {spec_dir.name}")
-    if not validate_environment(spec_dir):
+    if not validate_environment(spec_dir, agent_backend=agent_backend):
         sys.exit(1)
 
     # Check if there's pending human feedback that needs to be processed
@@ -115,6 +116,7 @@ def handle_qa_command(
                 spec_dir=spec_dir,
                 model=model,
                 verbose=verbose,
+                agent_backend=agent_backend,
             )
         )
         if approved:

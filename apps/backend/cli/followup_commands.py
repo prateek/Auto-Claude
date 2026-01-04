@@ -221,6 +221,7 @@ def handle_followup_command(
     spec_dir: Path,
     model: str,
     verbose: bool = False,
+    agent_backend: str | None = None,
 ) -> None:
     """
     Handle the --followup command.
@@ -325,7 +326,7 @@ def handle_followup_command(
     # Now run the follow-up planner to add new subtasks
     print()
 
-    if not validate_environment(spec_dir):
+    if not validate_environment(spec_dir, agent_backend=agent_backend):
         sys.exit(1)
 
     try:
@@ -335,6 +336,7 @@ def handle_followup_command(
                 spec_dir=spec_dir,
                 model=model,
                 verbose=verbose,
+                agent_backend=agent_backend,
             )
         )
 

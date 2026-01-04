@@ -15,6 +15,7 @@ if str(_PARENT_DIR) not in sys.path:
     sys.path.insert(0, str(_PARENT_DIR))
 
 from core.auth import get_auth_token, get_auth_token_source
+from core.agent_backend import resolve_agent_backend
 from dotenv import load_dotenv
 from graphiti_config import get_graphiti_status
 from linear_integration import LinearManager
@@ -108,7 +109,7 @@ def find_spec(project_dir: Path, spec_identifier: str) -> Path | None:
     return None
 
 
-def validate_environment(spec_dir: Path) -> bool:
+def validate_environment(spec_dir: Path, agent_backend: str | None = None) -> bool:
     """
     Validate that the environment is set up correctly.
 
@@ -117,24 +118,35 @@ def validate_environment(spec_dir: Path) -> bool:
     """
     valid = True
 
-    # Check for OAuth token (API keys are not supported)
-    if not get_auth_token():
-        print("Error: No OAuth token found")
-        print("\nAuto Claude requires Claude Code OAuth authentication.")
-        print("Direct API keys (ANTHROPIC_API_KEY) are not supported.")
-        print("\nTo authenticate, run:")
-        print("  claude setup-token")
-        valid = False
-    else:
-        # Show which auth source is being used
-        source = get_auth_token_source()
-        if source:
-            print(f"Auth: {source}")
+    backend = resolve_agent_backend(agent_backend)
 
-        # Show custom base URL if set
-        base_url = os.environ.get("ANTHROPIC_BASE_URL")
-        if base_url:
-            print(f"API Endpoint: {base_url}")
+    # Auth / backend prerequisites
+    if backend == "claude":
+        # Check for OAuth token (API keys are not supported)
+        if not get_auth_token():
+            print("Error: No OAuth token found")
+            print("\nAuto Claude requires Claude Code OAuth authentication.")
+            print("Direct API keys (ANTHROPIC_API_KEY) are not supported.")
+            print("\nTo authenticate, run:")
+            print("  claude setup-token")
+            valid = False
+        else:
+            # Show which auth source is being used
+            source = get_auth_token_source()
+            if source:
+                print(f"Auth: {source}")
+
+            # Show custom base URL if set
+            base_url = os.environ.get("ANTHROPIC_BASE_URL")
+            if base_url:
+                print(f"API Endpoint: {base_url}")
+    else:
+        print("Agent backend: codex (Codex CLI)")
+        # Best-effort guidance: Codex CLI typically needs OPENAI_API_KEY.
+        if not os.environ.get("OPENAI_API_KEY"):
+            print(
+                "Warning: OPENAI_API_KEY is not set. Codex CLI may fail to authenticate."
+            )
 
     # Check for spec.md in spec directory
     spec_file = spec_dir / "spec.md"

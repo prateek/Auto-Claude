@@ -8,7 +8,7 @@ Handles follow-up planner sessions for adding new subtasks to completed specs.
 import logging
 from pathlib import Path
 
-from core.client import create_client
+from core.agent_client import create_agent_session_client
 from phase_config import get_phase_model, get_phase_thinking_budget
 from phase_event import ExecutionPhase, emit_phase
 from task_logger import (
@@ -37,6 +37,7 @@ async def run_followup_planner(
     spec_dir: Path,
     model: str,
     verbose: bool = False,
+    agent_backend: str | None = None,
 ) -> bool:
     """
     Run the follow-up planner to add new subtasks to a completed spec.
@@ -95,11 +96,13 @@ async def run_followup_planner(
     # Respects task_metadata.json configuration when no CLI override
     planning_model = get_phase_model(spec_dir, "planning", model)
     planning_thinking_budget = get_phase_thinking_budget(spec_dir, "planning")
-    client = create_client(
-        project_dir,
-        spec_dir,
-        planning_model,
+    client = create_agent_session_client(
+        project_dir=project_dir,
+        spec_dir=spec_dir,
+        model=planning_model,
+        agent_type="planner",
         max_thinking_tokens=planning_thinking_budget,
+        backend=agent_backend,
     )
 
     # Generate follow-up planner prompt

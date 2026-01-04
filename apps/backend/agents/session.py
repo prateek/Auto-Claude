@@ -9,6 +9,8 @@ memory updates, recovery tracking, and Linear integration.
 import logging
 from pathlib import Path
 
+from typing import Any
+
 from claude_agent_sdk import ClaudeSDKClient
 from debug import debug, debug_detailed, debug_error, debug_section, debug_success
 from insight_extractor import extract_session_insights
@@ -312,17 +314,17 @@ async def post_session_processing(
 
 
 async def run_agent_session(
-    client: ClaudeSDKClient,
+    client: Any,
     message: str,
     spec_dir: Path,
     verbose: bool = False,
     phase: LogPhase = LogPhase.CODING,
 ) -> tuple[str, str]:
     """
-    Run a single agent session using Claude Agent SDK.
+    Run a single agent session using the configured backend (Claude SDK or Codex CLI).
 
     Args:
-        client: Claude SDK client
+        client: Agent session client (Claude SDK client or Codex CLI client)
         message: The prompt to send
         spec_dir: Spec directory path
         verbose: Whether to show detailed output
@@ -343,7 +345,10 @@ async def run_agent_session(
         prompt_length=len(message),
         prompt_preview=message[:200] + "..." if len(message) > 200 else message,
     )
-    print("Sending prompt to Claude Agent SDK...\n")
+    backend_name = (
+        "Claude Agent SDK" if isinstance(client, ClaudeSDKClient) else "Codex CLI"
+    )
+    print(f"Sending prompt to {backend_name}...\n")
 
     # Get task logger for this spec
     task_logger = get_task_logger(spec_dir)
@@ -352,170 +357,189 @@ async def run_agent_session(
     tool_count = 0
 
     try:
-        # Send the query
-        debug("session", "Sending query to Claude SDK...")
-        await client.query(message)
-        debug_success("session", "Query sent successfully")
-
-        # Collect response text and show tool use
         response_text = ""
-        debug("session", "Starting to receive response stream...")
-        async for msg in client.receive_response():
-            msg_type = type(msg).__name__
-            message_count += 1
-            debug_detailed(
-                "session",
-                f"Received message #{message_count}",
-                msg_type=msg_type,
-            )
 
-            # Handle AssistantMessage (text and tool use)
-            if msg_type == "AssistantMessage" and hasattr(msg, "content"):
-                for block in msg.content:
-                    block_type = type(block).__name__
+        if isinstance(client, ClaudeSDKClient):
+            # --- Claude SDK streaming (tools + text) ---
+            debug("session", "Sending query to Claude SDK...")
+            await client.query(message)
+            debug_success("session", "Query sent successfully")
 
-                    if block_type == "TextBlock" and hasattr(block, "text"):
-                        response_text += block.text
-                        print(block.text, end="", flush=True)
-                        # Log text to task logger (persist without double-printing)
-                        if task_logger and block.text.strip():
-                            task_logger.log(
-                                block.text,
-                                LogEntryType.TEXT,
-                                phase,
-                                print_to_console=False,
+            debug("session", "Starting to receive response stream...")
+            async for msg in client.receive_response():
+                msg_type = type(msg).__name__
+                message_count += 1
+                debug_detailed(
+                    "session",
+                    f"Received message #{message_count}",
+                    msg_type=msg_type,
+                )
+
+                # Handle AssistantMessage (text and tool use)
+                if msg_type == "AssistantMessage" and hasattr(msg, "content"):
+                    for block in msg.content:
+                        block_type = type(block).__name__
+
+                        if block_type == "TextBlock" and hasattr(block, "text"):
+                            response_text += block.text
+                            print(block.text, end="", flush=True)
+                            # Log text to task logger (persist without double-printing)
+                            if task_logger and block.text.strip():
+                                task_logger.log(
+                                    block.text,
+                                    LogEntryType.TEXT,
+                                    phase,
+                                    print_to_console=False,
+                                )
+                        elif block_type == "ToolUseBlock" and hasattr(block, "name"):
+                            tool_name = block.name
+                            tool_input_display = None
+                            tool_count += 1
+
+                            # Safely extract tool input (handles None, non-dict, etc.)
+                            inp = get_safe_tool_input(block)
+
+                            # Extract meaningful tool input for display
+                            if inp:
+                                if "pattern" in inp:
+                                    tool_input_display = f"pattern: {inp['pattern']}"
+                                elif "file_path" in inp:
+                                    fp = inp["file_path"]
+                                    if len(fp) > 50:
+                                        fp = "..." + fp[-47:]
+                                    tool_input_display = fp
+                                elif "command" in inp:
+                                    cmd = inp["command"]
+                                    if len(cmd) > 50:
+                                        cmd = cmd[:47] + "..."
+                                    tool_input_display = cmd
+                                elif "path" in inp:
+                                    tool_input_display = inp["path"]
+
+                            debug(
+                                "session",
+                                f"Tool call #{tool_count}: {tool_name}",
+                                tool_input=tool_input_display,
+                                full_input=str(inp)[:500] if inp else None,
                             )
-                    elif block_type == "ToolUseBlock" and hasattr(block, "name"):
-                        tool_name = block.name
-                        tool_input_display = None
-                        tool_count += 1
 
-                        # Safely extract tool input (handles None, non-dict, etc.)
-                        inp = get_safe_tool_input(block)
-
-                        # Extract meaningful tool input for display
-                        if inp:
-                            if "pattern" in inp:
-                                tool_input_display = f"pattern: {inp['pattern']}"
-                            elif "file_path" in inp:
-                                fp = inp["file_path"]
-                                if len(fp) > 50:
-                                    fp = "..." + fp[-47:]
-                                tool_input_display = fp
-                            elif "command" in inp:
-                                cmd = inp["command"]
-                                if len(cmd) > 50:
-                                    cmd = cmd[:47] + "..."
-                                tool_input_display = cmd
-                            elif "path" in inp:
-                                tool_input_display = inp["path"]
-
-                        debug(
-                            "session",
-                            f"Tool call #{tool_count}: {tool_name}",
-                            tool_input=tool_input_display,
-                            full_input=str(inp)[:500] if inp else None,
-                        )
-
-                        # Log tool start (handles printing too)
-                        if task_logger:
-                            task_logger.tool_start(
-                                tool_name,
-                                tool_input_display,
-                                phase,
-                                print_to_console=True,
-                            )
-                        else:
-                            print(f"\n[Tool: {tool_name}]", flush=True)
-
-                        if verbose and hasattr(block, "input"):
-                            input_str = str(block.input)
-                            if len(input_str) > 300:
-                                print(f"   Input: {input_str[:300]}...", flush=True)
+                            # Log tool start (handles printing too)
+                            if task_logger:
+                                task_logger.tool_start(
+                                    tool_name,
+                                    tool_input_display,
+                                    phase,
+                                    print_to_console=True,
+                                )
                             else:
-                                print(f"   Input: {input_str}", flush=True)
-                        current_tool = tool_name
+                                print(f"\n[Tool: {tool_name}]", flush=True)
 
-            # Handle UserMessage (tool results)
-            elif msg_type == "UserMessage" and hasattr(msg, "content"):
-                for block in msg.content:
-                    block_type = type(block).__name__
+                            if verbose and hasattr(block, "input"):
+                                input_str = str(block.input)
+                                if len(input_str) > 300:
+                                    print(f"   Input: {input_str[:300]}...", flush=True)
+                                else:
+                                    print(f"   Input: {input_str}", flush=True)
+                            current_tool = tool_name
 
-                    if block_type == "ToolResultBlock":
-                        result_content = getattr(block, "content", "")
-                        is_error = getattr(block, "is_error", False)
+                # Handle UserMessage (tool results)
+                elif msg_type == "UserMessage" and hasattr(msg, "content"):
+                    for block in msg.content:
+                        block_type = type(block).__name__
 
-                        # Check if command was blocked by security hook
-                        if "blocked" in str(result_content).lower():
-                            debug_error(
-                                "session",
-                                f"Tool BLOCKED: {current_tool}",
-                                result=str(result_content)[:300],
-                            )
-                            print(f"   [BLOCKED] {result_content}", flush=True)
-                            if task_logger and current_tool:
-                                task_logger.tool_end(
-                                    current_tool,
-                                    success=False,
-                                    result="BLOCKED",
-                                    detail=str(result_content),
-                                    phase=phase,
+                        if block_type == "ToolResultBlock":
+                            result_content = getattr(block, "content", "")
+                            is_error = getattr(block, "is_error", False)
+
+                            # Check if command was blocked by security hook
+                            if "blocked" in str(result_content).lower():
+                                debug_error(
+                                    "session",
+                                    f"Tool BLOCKED: {current_tool}",
+                                    result=str(result_content)[:300],
                                 )
-                        elif is_error:
-                            # Show errors (truncated)
-                            error_str = str(result_content)[:500]
-                            debug_error(
-                                "session",
-                                f"Tool error: {current_tool}",
-                                error=error_str[:200],
-                            )
-                            print(f"   [Error] {error_str}", flush=True)
-                            if task_logger and current_tool:
-                                # Store full error in detail for expandable view
-                                task_logger.tool_end(
-                                    current_tool,
-                                    success=False,
-                                    result=error_str[:100],
-                                    detail=str(result_content),
-                                    phase=phase,
+                                print(f"   [BLOCKED] {result_content}", flush=True)
+                                if task_logger and current_tool:
+                                    task_logger.tool_end(
+                                        current_tool,
+                                        success=False,
+                                        result="BLOCKED",
+                                        detail=str(result_content),
+                                        phase=phase,
+                                    )
+                            elif is_error:
+                                # Show errors (truncated)
+                                error_str = str(result_content)[:500]
+                                debug_error(
+                                    "session",
+                                    f"Tool error: {current_tool}",
+                                    error=error_str[:200],
                                 )
-                        else:
-                            # Tool succeeded
-                            debug_detailed(
-                                "session",
-                                f"Tool success: {current_tool}",
-                                result_length=len(str(result_content)),
-                            )
-                            if verbose:
-                                result_str = str(result_content)[:200]
-                                print(f"   [Done] {result_str}", flush=True)
+                                print(f"   [Error] {error_str}", flush=True)
+                                if task_logger and current_tool:
+                                    # Store full error in detail for expandable view
+                                    task_logger.tool_end(
+                                        current_tool,
+                                        success=False,
+                                        result=error_str[:100],
+                                        detail=str(result_content),
+                                        phase=phase,
+                                    )
                             else:
-                                print("   [Done]", flush=True)
-                            if task_logger and current_tool:
-                                # Store full result in detail for expandable view (only for certain tools)
-                                # Skip storing for very large outputs like Glob results
-                                detail_content = None
-                                if current_tool in (
-                                    "Read",
-                                    "Grep",
-                                    "Bash",
-                                    "Edit",
-                                    "Write",
-                                ):
-                                    result_str = str(result_content)
-                                    # Only store if not too large (detail truncation happens in logger)
-                                    if (
-                                        len(result_str) < 50000
-                                    ):  # 50KB max before truncation
-                                        detail_content = result_str
-                                task_logger.tool_end(
-                                    current_tool,
-                                    success=True,
-                                    detail=detail_content,
-                                    phase=phase,
+                                # Tool succeeded
+                                debug_detailed(
+                                    "session",
+                                    f"Tool success: {current_tool}",
+                                    result_length=len(str(result_content)),
                                 )
+                                if verbose:
+                                    result_str = str(result_content)[:200]
+                                    print(f"   [Done] {result_str}", flush=True)
+                                else:
+                                    print("   [Done]", flush=True)
+                                if task_logger and current_tool:
+                                    # Store full result in detail for expandable view (only for certain tools)
+                                    # Skip storing for very large outputs like Glob results
+                                    detail_content = None
+                                    if current_tool in (
+                                        "Read",
+                                        "Grep",
+                                        "Bash",
+                                        "Edit",
+                                        "Write",
+                                    ):
+                                        result_str = str(result_content)
+                                        # Only store if not too large (detail truncation happens in logger)
+                                        if (
+                                            len(result_str) < 50000
+                                        ):  # 50KB max before truncation
+                                            detail_content = result_str
+                                    task_logger.tool_end(
+                                        current_tool,
+                                        success=True,
+                                        detail=detail_content,
+                                        phase=phase,
+                                    )
 
-                        current_tool = None
+                            current_tool = None
+        else:
+            # --- Codex CLI (plain text) ---
+            debug("session", "Running Codex CLI...")
+
+            def _on_line(line: str) -> None:
+                nonlocal response_text
+                response_text += line
+                print(line, end="", flush=True)
+                if task_logger and line.strip():
+                    task_logger.log(
+                        line,
+                        LogEntryType.TEXT,
+                        phase,
+                        print_to_console=False,
+                    )
+
+            # Codex CLI client provides `run(prompt, on_line=...)`
+            await client.run(message, on_line=_on_line)
 
         print("\n" + "-" * 70 + "\n")
 

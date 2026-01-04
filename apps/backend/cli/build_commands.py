@@ -61,6 +61,7 @@ def handle_build_command(
     skip_qa: bool,
     force_bypass_approval: bool,
     base_branch: str | None = None,
+    agent_backend: str | None = None,
 ) -> None:
     """
     Handle the main build command.
@@ -118,7 +119,7 @@ def handle_build_command(
     print()
 
     # Validate environment
-    if not validate_environment(spec_dir):
+    if not validate_environment(spec_dir, agent_backend=agent_backend):
         sys.exit(1)
 
     # Check human review approval
@@ -231,6 +232,7 @@ def handle_build_command(
                 max_iterations=max_iterations,
                 verbose=verbose,
                 source_spec_dir=source_spec_dir,  # For syncing progress back to main project
+                agent_backend=agent_backend,
             )
         )
         debug_success("run.py", "Agent execution completed")
@@ -252,6 +254,7 @@ def handle_build_command(
                         spec_dir=spec_dir,
                         model=model,
                         verbose=verbose,
+                        agent_backend=agent_backend,
                     )
                 )
 
@@ -441,6 +444,7 @@ def _handle_build_interrupt(
                     model=model,
                     max_iterations=max_iterations,
                     verbose=verbose,
+                    agent_backend=agent_backend,
                 )
             )
             # Build completed or was interrupted again - exit

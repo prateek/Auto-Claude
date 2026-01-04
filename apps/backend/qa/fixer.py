@@ -13,6 +13,8 @@ from pathlib import Path
 
 # Memory integration for cross-session learning
 from agents.memory_manager import get_graphiti_context, save_session_memory
+from typing import Any
+
 from claude_agent_sdk import ClaudeSDKClient
 from debug import debug, debug_detailed, debug_error, debug_section, debug_success
 from security.tool_input_validator import get_safe_tool_input
@@ -47,7 +49,7 @@ def load_qa_fixer_prompt() -> str:
 
 
 async def run_qa_fixer_session(
-    client: ClaudeSDKClient,
+    client: Any,
     spec_dir: Path,
     fix_session: int,
     verbose: bool = False,
@@ -57,7 +59,7 @@ async def run_qa_fixer_session(
     Run a QA fixer agent session.
 
     Args:
-        client: Claude SDK client
+        client: Agent session client (Claude SDK client or Codex CLI client)
         spec_dir: Spec directory
         fix_session: Fix iteration number
         verbose: Whether to show detailed output
@@ -124,138 +126,157 @@ async def run_qa_fixer_session(
     prompt += f"The fix request file is at: `{spec_dir}/QA_FIX_REQUEST.md`\n"
 
     try:
-        debug("qa_fixer", "Sending query to Claude SDK...")
-        await client.query(prompt)
-        debug_success("qa_fixer", "Query sent successfully")
-
         response_text = ""
-        debug("qa_fixer", "Starting to receive response stream...")
-        async for msg in client.receive_response():
-            msg_type = type(msg).__name__
-            message_count += 1
-            debug_detailed(
-                "qa_fixer",
-                f"Received message #{message_count}",
-                msg_type=msg_type,
-            )
 
-            if msg_type == "AssistantMessage" and hasattr(msg, "content"):
-                for block in msg.content:
-                    block_type = type(block).__name__
+        if isinstance(client, ClaudeSDKClient):
+            debug("qa_fixer", "Sending query to Claude SDK...")
+            await client.query(prompt)
+            debug_success("qa_fixer", "Query sent successfully")
 
-                    if block_type == "TextBlock" and hasattr(block, "text"):
-                        response_text += block.text
-                        print(block.text, end="", flush=True)
-                        # Log text to task logger (persist without double-printing)
-                        if task_logger and block.text.strip():
-                            task_logger.log(
-                                block.text,
-                                LogEntryType.TEXT,
-                                LogPhase.VALIDATION,
-                                print_to_console=False,
-                            )
-                    elif block_type == "ToolUseBlock" and hasattr(block, "name"):
-                        tool_name = block.name
-                        tool_input_display = None
-                        tool_count += 1
+            debug("qa_fixer", "Starting to receive response stream...")
+            async for msg in client.receive_response():
+                msg_type = type(msg).__name__
+                message_count += 1
+                debug_detailed(
+                    "qa_fixer",
+                    f"Received message #{message_count}",
+                    msg_type=msg_type,
+                )
 
-                        # Safely extract tool input (handles None, non-dict, etc.)
-                        inp = get_safe_tool_input(block)
+                if msg_type == "AssistantMessage" and hasattr(msg, "content"):
+                    for block in msg.content:
+                        block_type = type(block).__name__
 
-                        if inp:
-                            if "file_path" in inp:
-                                fp = inp["file_path"]
-                                if len(fp) > 50:
-                                    fp = "..." + fp[-47:]
-                                tool_input_display = fp
-                            elif "command" in inp:
-                                cmd = inp["command"]
-                                if len(cmd) > 50:
-                                    cmd = cmd[:47] + "..."
-                                tool_input_display = cmd
-
-                        debug(
-                            "qa_fixer",
-                            f"Tool call #{tool_count}: {tool_name}",
-                            tool_input=tool_input_display,
-                        )
-
-                        # Log tool start (handles printing)
-                        if task_logger:
-                            task_logger.tool_start(
-                                tool_name,
-                                tool_input_display,
-                                LogPhase.VALIDATION,
-                                print_to_console=True,
-                            )
-                        else:
-                            print(f"\n[Fixer Tool: {tool_name}]", flush=True)
-
-                        if verbose and hasattr(block, "input"):
-                            input_str = str(block.input)
-                            if len(input_str) > 300:
-                                print(f"   Input: {input_str[:300]}...", flush=True)
-                            else:
-                                print(f"   Input: {input_str}", flush=True)
-                        current_tool = tool_name
-
-            elif msg_type == "UserMessage" and hasattr(msg, "content"):
-                for block in msg.content:
-                    block_type = type(block).__name__
-
-                    if block_type == "ToolResultBlock":
-                        is_error = getattr(block, "is_error", False)
-                        result_content = getattr(block, "content", "")
-
-                        if is_error:
-                            debug_error(
-                                "qa_fixer",
-                                f"Tool error: {current_tool}",
-                                error=str(result_content)[:200],
-                            )
-                            error_str = str(result_content)[:500]
-                            print(f"   [Error] {error_str}", flush=True)
-                            if task_logger and current_tool:
-                                # Store full error in detail for expandable view
-                                task_logger.tool_end(
-                                    current_tool,
-                                    success=False,
-                                    result=error_str[:100],
-                                    detail=str(result_content),
-                                    phase=LogPhase.VALIDATION,
+                        if block_type == "TextBlock" and hasattr(block, "text"):
+                            response_text += block.text
+                            print(block.text, end="", flush=True)
+                            # Log text to task logger (persist without double-printing)
+                            if task_logger and block.text.strip():
+                                task_logger.log(
+                                    block.text,
+                                    LogEntryType.TEXT,
+                                    LogPhase.VALIDATION,
+                                    print_to_console=False,
                                 )
-                        else:
-                            debug_detailed(
-                                "qa_fixer",
-                                f"Tool success: {current_tool}",
-                                result_length=len(str(result_content)),
-                            )
-                            if verbose:
-                                result_str = str(result_content)[:200]
-                                print(f"   [Done] {result_str}", flush=True)
-                            else:
-                                print("   [Done]", flush=True)
-                            if task_logger and current_tool:
-                                # Store full result in detail for expandable view
-                                detail_content = None
-                                if current_tool in (
-                                    "Read",
-                                    "Grep",
-                                    "Bash",
-                                    "Edit",
-                                    "Write",
-                                ):
-                                    result_str = str(result_content)
-                                    if len(result_str) < 50000:
-                                        detail_content = result_str
-                                task_logger.tool_end(
-                                    current_tool,
-                                    success=True,
-                                    detail=detail_content,
-                                    phase=LogPhase.VALIDATION,
-                                )
+                        elif block_type == "ToolUseBlock" and hasattr(block, "name"):
+                            tool_name = block.name
+                            tool_input_display = None
+                            tool_count += 1
 
-                        current_tool = None
+                            # Safely extract tool input (handles None, non-dict, etc.)
+                            inp = get_safe_tool_input(block)
+
+                            if inp:
+                                if "file_path" in inp:
+                                    fp = inp["file_path"]
+                                    if len(fp) > 50:
+                                        fp = "..." + fp[-47:]
+                                    tool_input_display = fp
+                                elif "command" in inp:
+                                    cmd = inp["command"]
+                                    if len(cmd) > 50:
+                                        cmd = cmd[:47] + "..."
+                                    tool_input_display = cmd
+
+                            debug(
+                                "qa_fixer",
+                                f"Tool call #{tool_count}: {tool_name}",
+                                tool_input=tool_input_display,
+                            )
+
+                            # Log tool start (handles printing)
+                            if task_logger:
+                                task_logger.tool_start(
+                                    tool_name,
+                                    tool_input_display,
+                                    LogPhase.VALIDATION,
+                                    print_to_console=True,
+                                )
+                            else:
+                                print(f"\n[Fixer Tool: {tool_name}]", flush=True)
+
+                            if verbose and hasattr(block, "input"):
+                                input_str = str(block.input)
+                                if len(input_str) > 300:
+                                    print(f"   Input: {input_str[:300]}...", flush=True)
+                                else:
+                                    print(f"   Input: {input_str}", flush=True)
+                            current_tool = tool_name
+
+                elif msg_type == "UserMessage" and hasattr(msg, "content"):
+                    for block in msg.content:
+                        block_type = type(block).__name__
+
+                        if block_type == "ToolResultBlock":
+                            is_error = getattr(block, "is_error", False)
+                            result_content = getattr(block, "content", "")
+
+                            if is_error:
+                                debug_error(
+                                    "qa_fixer",
+                                    f"Tool error: {current_tool}",
+                                    error=str(result_content)[:200],
+                                )
+                                error_str = str(result_content)[:500]
+                                print(f"   [Error] {error_str}", flush=True)
+                                if task_logger and current_tool:
+                                    # Store full error in detail for expandable view
+                                    task_logger.tool_end(
+                                        current_tool,
+                                        success=False,
+                                        result=error_str[:100],
+                                        detail=str(result_content),
+                                        phase=LogPhase.VALIDATION,
+                                    )
+                            else:
+                                debug_detailed(
+                                    "qa_fixer",
+                                    f"Tool success: {current_tool}",
+                                    result_length=len(str(result_content)),
+                                )
+                                if verbose:
+                                    result_str = str(result_content)[:200]
+                                    print(f"   [Done] {result_str}", flush=True)
+                                else:
+                                    print("   [Done]", flush=True)
+                                if task_logger and current_tool:
+                                    # Store full result in detail for expandable view
+                                    detail_content = None
+                                    if current_tool in (
+                                        "Read",
+                                        "Grep",
+                                        "Bash",
+                                        "Edit",
+                                        "Write",
+                                    ):
+                                        result_str = str(result_content)
+                                        if len(result_str) < 50000:
+                                            detail_content = result_str
+                                    task_logger.tool_end(
+                                        current_tool,
+                                        success=True,
+                                        detail=detail_content,
+                                        phase=LogPhase.VALIDATION,
+                                    )
+
+                            current_tool = None
+        else:
+            debug("qa_fixer", "Running Codex CLI for QA fixer...")
+
+            def _on_line(line: str) -> None:
+                nonlocal response_text, message_count
+                message_count += 1
+                response_text += line
+                print(line, end="", flush=True)
+                if task_logger and line.strip():
+                    task_logger.log(
+                        line,
+                        LogEntryType.TEXT,
+                        LogPhase.VALIDATION,
+                        print_to_console=False,
+                    )
+
+            await client.run(prompt, on_line=_on_line)
 
         print("\n" + "-" * 70 + "\n")
 

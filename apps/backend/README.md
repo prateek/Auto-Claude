@@ -51,6 +51,7 @@ python run.py --spec 001
 | `--spec 001 --review` | Review build changes |
 | `--spec 001 --discard` | Discard build |
 | `--spec 001 --qa` | Run QA validation |
+| `--agent-backend codex` | Use Codex CLI instead of Claude (optional) |
 | `--list-worktrees` | List all worktrees |
 | `--help` | Show all options |
 
@@ -64,6 +65,7 @@ Optional `.env` settings:
 | `DEBUG=true` | Enable debug logging |
 | `LINEAR_API_KEY` | Enable Linear integration |
 | `GRAPHITI_ENABLED=true` | Enable memory system |
+| `AUTO_CLAUDE_AGENT_BACKEND` | Agent backend: `claude` (default) or `codex` |
 
 ## Troubleshooting
 

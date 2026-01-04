@@ -73,12 +73,16 @@ Examples:
   python auto-claude/run.py --spec 001 --qa-status      # Check QA validation status
 
 Prerequisites:
-  1. Create a spec first: claude /spec
-  2. Run 'claude setup-token' and set CLAUDE_CODE_OAUTH_TOKEN
+  1. Create a spec first (UI or `python spec_runner.py`)
+  2. Agent backend auth:
+     - Claude (default): run 'claude setup-token' and set CLAUDE_CODE_OAUTH_TOKEN
+     - Codex: install Codex CLI and set OPENAI_API_KEY, then use --agent-backend codex
 
 Environment Variables:
-  CLAUDE_CODE_OAUTH_TOKEN  Your Claude Code OAuth token (required)
-                           Get it by running: claude setup-token
+  AUTO_CLAUDE_AGENT_BACKEND  Agent backend: claude (default) | codex
+  CLAUDE_CODE_OAUTH_TOKEN    Claude Code OAuth token (required for claude backend)
+                             Get it by running: claude setup-token
+  OPENAI_API_KEY             OpenAI API key (required for codex backend; also used by Graphiti)
   AUTO_BUILD_MODEL         Override default model (optional)
         """,
     )
@@ -121,6 +125,14 @@ Environment Variables:
         "--verbose",
         action="store_true",
         help="Enable verbose output",
+    )
+
+    parser.add_argument(
+        "--agent-backend",
+        type=str,
+        default=None,
+        help="Agent backend to use for sessions: claude (default) or codex. "
+        "Can also be set via AUTO_CLAUDE_AGENT_BACKEND.",
     )
 
     # Workspace options
@@ -380,6 +392,7 @@ def main() -> None:
             spec_dir=spec_dir,
             model=model,
             verbose=args.verbose,
+            agent_backend=args.agent_backend,
         )
         return
 
@@ -390,6 +403,7 @@ def main() -> None:
             spec_dir=spec_dir,
             model=model,
             verbose=args.verbose,
+            agent_backend=args.agent_backend,
         )
         return
 
@@ -406,6 +420,7 @@ def main() -> None:
         skip_qa=args.skip_qa,
         force_bypass_approval=args.force,
         base_branch=args.base_branch,
+        agent_backend=args.agent_backend,
     )
 
 
