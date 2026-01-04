@@ -9,7 +9,7 @@ import asyncio
 import logging
 from pathlib import Path
 
-from core.client import create_client
+from core.client import create_agent_client
 from linear_updater import (
     LinearTaskState,
     is_linear_enabled,
@@ -258,7 +258,8 @@ async def run_autonomous_agent(
 
         # Create client (fresh context) with phase-specific model and thinking
         # Use appropriate agent_type for correct tool permissions and thinking budget
-        client = create_client(
+        # Uses create_agent_client to support multiple backends (Claude, Codex)
+        client = create_agent_client(
             project_dir,
             spec_dir,
             phase_model,

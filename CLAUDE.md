@@ -4,9 +4,12 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-Auto Claude is a multi-agent autonomous coding framework that builds software through coordinated AI agent sessions. It uses the Claude Agent SDK to run agents in isolated workspaces with security controls.
+Auto Claude is a multi-agent autonomous coding framework that builds software through coordinated AI agent sessions. It supports multiple AI agent backends for flexibility:
 
-**CRITICAL: All AI interactions use the Claude Agent SDK (`claude-agent-sdk` package), NOT the Anthropic API directly.**
+- **Claude Code** (default): Uses Claude Agent SDK for Claude-powered agents
+- **Codex CLI**: Uses OpenAI's Codex CLI for OpenAI-powered agents
+
+**CRITICAL: All AI interactions use the backend abstraction layer (`create_agent_client()` from `core.client`), NOT raw API clients directly.**
 
 ## Project Structure
 
@@ -274,44 +277,84 @@ Three-layer defense:
 
 Security profile cached in `.auto-claude-security.json`.
 
-### Claude Agent SDK Integration
+### Agent Backend Configuration
 
-**CRITICAL: Auto Claude uses the Claude Agent SDK for ALL AI interactions. Never use the Anthropic API directly.**
+Auto Claude supports multiple AI agent backends. Configure via environment variable:
+
+| Backend | Env Value | Description | Auth Required |
+|---------|-----------|-------------|---------------|
+| Claude Code | `AGENT_BACKEND=claude` (default) | Claude Agent SDK | `CLAUDE_CODE_OAUTH_TOKEN` or keychain |
+| Codex CLI | `AGENT_BACKEND=codex` | OpenAI Codex CLI | `OPENAI_API_KEY` |
+
+**Setup for Codex CLI:**
+```bash
+# 1. Install Codex CLI
+npm install -g @openai/codex
+
+# 2. Configure environment
+echo "AGENT_BACKEND=codex" >> apps/backend/.env
+echo "OPENAI_API_KEY=sk-..." >> apps/backend/.env
+
+# 3. Optionally set model
+echo "CODEX_MODEL=o4-mini" >> apps/backend/.env  # default: o4-mini
+```
+
+**Backend-specific features:**
+- **Claude**: Extended thinking, MCP servers, subagents, structured output
+- **Codex**: Full-auto approval mode, OpenAI model ecosystem
+
+**Client Location:** `apps/backend/core/backend_config.py`
+
+### Agent Client Integration
+
+**CRITICAL: Auto Claude uses the backend abstraction layer for ALL AI interactions. Never use raw API clients directly.**
 
 **Client Location:** `apps/backend/core/client.py`
 
-The `create_client()` function creates a configured `ClaudeSDKClient` instance with:
-- Multi-layered security (sandbox, permissions, security hooks)
-- Agent-specific tool permissions (planner, coder, qa_reviewer, qa_fixer)
-- Dynamic MCP server integration based on project capabilities
-- Extended thinking token budget control
+Use `create_agent_client()` as the primary entry point - it automatically selects the appropriate backend (Claude or Codex) based on `AGENT_BACKEND` environment variable.
 
 **Example usage in agents:**
 ```python
-from core.client import create_client
+from core.client import create_agent_client
 
-# Create SDK client (NOT raw Anthropic API client)
-client = create_client(
+# Create agent client (auto-selects Claude or Codex based on AGENT_BACKEND)
+client = create_agent_client(
     project_dir=project_dir,
     spec_dir=spec_dir,
-    model="claude-sonnet-4-5-20250929",
+    model=None,  # Uses backend default if not specified
     agent_type="coder",
-    max_thinking_tokens=None  # or 5000/10000/16000
+    max_thinking_tokens=None  # Claude only: 5000/10000/16000
 )
 
-# Run agent session
-response = client.create_agent_session(
-    name="coder-agent-session",
-    starting_message="Implement the authentication feature"
-)
+# Run agent session (same interface for both backends)
+async with client:
+    await client.query("Implement the authentication feature")
+    async for msg in client.receive_response():
+        # Process response messages...
 ```
 
-**Why use the SDK:**
+**Client factory functions:**
+- `create_agent_client()` - Primary entry point, auto-selects backend
+- `create_client()` - Claude-specific client with full SDK features
+- `create_codex_client()` - Codex-specific client
+
+**Backend-specific capabilities:**
+
+| Feature | Claude | Codex |
+|---------|--------|-------|
+| Extended thinking | ✓ | - |
+| MCP servers | ✓ | - |
+| Subagents | ✓ | - |
+| Structured output | ✓ | - |
+| Security sandbox | ✓ | ✓ |
+| Full-auto mode | - | ✓ |
+
+**Why use the abstraction:**
+- Consistent interface across backends
 - Pre-configured security (sandbox, allowlists, hooks)
-- Automatic MCP server integration (Context7, Linear, Graphiti, Electron, Puppeteer)
+- Automatic backend selection via environment
 - Tool permissions based on agent role
 - Session management and recovery
-- Unified API across all agent types
 
 **Where to find working examples:**
 - `apps/backend/agents/planner.py` - Planner agent

@@ -4,12 +4,29 @@ Agent Session Management
 
 Handles running agent sessions and post-session processing including
 memory updates, recovery tracking, and Linear integration.
+
+Multi-Backend Support
+---------------------
+This module supports multiple agent backends (Claude Code, Codex CLI)
+through duck typing. Both client types implement the same interface:
+- async context manager (__aenter__, __aexit__)
+- query(message) method
+- receive_response() async generator
 """
 
 import logging
 from pathlib import Path
+from typing import Any, Protocol
 
-from claude_agent_sdk import ClaudeSDKClient
+
+class AgentClientProtocol(Protocol):
+    """Protocol defining the interface for agent clients."""
+
+    async def query(self, message: str) -> None:
+        ...
+
+    def receive_response(self):
+        ...
 from debug import debug, debug_detailed, debug_error, debug_section, debug_success
 from insight_extractor import extract_session_insights
 from linear_updater import (
@@ -312,7 +329,7 @@ async def post_session_processing(
 
 
 async def run_agent_session(
-    client: ClaudeSDKClient,
+    client: Any,  # ClaudeSDKClient or CodexCLIClient (duck typed)
     message: str,
     spec_dir: Path,
     verbose: bool = False,

@@ -4,6 +4,15 @@ Authentication helpers for Auto Claude.
 Provides centralized authentication token resolution with fallback support
 for multiple environment variables, and SDK environment variable passthrough
 for custom API endpoints.
+
+Multi-Backend Authentication
+----------------------------
+Auto Claude supports multiple agent backends, each with different auth requirements:
+
+- Claude Code: Requires OAuth token (CLAUDE_CODE_OAUTH_TOKEN or keychain)
+- Codex CLI: Requires OpenAI API key (OPENAI_API_KEY)
+
+Use `require_backend_auth()` to validate authentication for the current backend.
 """
 
 import json
@@ -246,3 +255,103 @@ def ensure_claude_code_oauth_token() -> None:
     token = get_auth_token()
     if token:
         os.environ["CLAUDE_CODE_OAUTH_TOKEN"] = token
+
+
+# =============================================================================
+# Codex CLI Authentication
+# =============================================================================
+
+
+def get_openai_api_key() -> str | None:
+    """
+    Get OpenAI API key for Codex CLI authentication.
+
+    Returns:
+        OpenAI API key if found, None otherwise
+
+    Environment:
+        OPENAI_API_KEY: OpenAI API key for Codex CLI
+    """
+    return os.environ.get("OPENAI_API_KEY")
+
+
+def require_openai_api_key() -> str:
+    """
+    Get OpenAI API key or raise ValueError.
+
+    Raises:
+        ValueError: If OPENAI_API_KEY is not set
+    """
+    key = get_openai_api_key()
+    if not key:
+        raise ValueError(
+            "OPENAI_API_KEY not set.\n\n"
+            "Codex CLI requires an OpenAI API key for authentication.\n\n"
+            "To set up:\n"
+            "  1. Get an API key from: https://platform.openai.com/api-keys\n"
+            "  2. Add to your .env file: OPENAI_API_KEY=sk-...\n"
+        )
+    return key
+
+
+# =============================================================================
+# Multi-Backend Authentication
+# =============================================================================
+
+
+def require_backend_auth() -> dict[str, str]:
+    """
+    Validate and get authentication for the current agent backend.
+
+    Returns:
+        Dict with authentication details for the current backend:
+        - For Claude: {"token": "...", "source": "..."}
+        - For Codex: {"api_key": "..."}
+
+    Raises:
+        ValueError: If authentication is not configured for the backend
+    """
+    from core.backend_config import AgentBackend, get_agent_backend
+
+    backend = get_agent_backend()
+
+    if backend == AgentBackend.CLAUDE:
+        token = require_auth_token()
+        source = get_auth_token_source()
+        return {"token": token, "source": source or "unknown"}
+
+    elif backend == AgentBackend.CODEX:
+        api_key = require_openai_api_key()
+        return {"api_key": api_key}
+
+    else:
+        raise ValueError(f"Unknown backend: {backend}")
+
+
+def get_backend_auth_status() -> dict[str, bool | str]:
+    """
+    Get authentication status for all supported backends.
+
+    Returns:
+        Dict with status for each backend:
+        {
+            "claude": {"available": True/False, "source": "..."},
+            "codex": {"available": True/False}
+        }
+    """
+    status = {}
+
+    # Claude authentication
+    claude_token = get_auth_token()
+    status["claude"] = {
+        "available": bool(claude_token),
+        "source": get_auth_token_source() if claude_token else None,
+    }
+
+    # Codex authentication
+    openai_key = get_openai_api_key()
+    status["codex"] = {
+        "available": bool(openai_key),
+    }
+
+    return status

@@ -10,6 +10,15 @@ use `create_simple_client()` from `core.simple_client`.
 
 The client factory now uses AGENT_CONFIGS from agents/tools_pkg/models.py as the
 single source of truth for phase-aware tool and MCP server configuration.
+
+Multi-Backend Support
+---------------------
+Auto Claude supports multiple agent backends:
+- Claude Code (default): Uses Claude Agent SDK
+- Codex CLI: Uses OpenAI's Codex CLI
+
+Use `create_agent_client()` as the primary entry point - it automatically selects
+the appropriate backend based on the AGENT_BACKEND environment variable.
 """
 
 import copy
@@ -120,6 +129,8 @@ def invalidate_project_cache(project_dir: Path | None = None) -> None:
                 logger.debug(f"Invalidated project index cache for {project_dir}")
 
 
+from typing import Protocol, Union
+
 from agents.tools_pkg import (
     CONTEXT7_TOOLS,
     ELECTRON_TOOLS,
@@ -134,9 +145,31 @@ from agents.tools_pkg import (
 from claude_agent_sdk import ClaudeAgentOptions, ClaudeSDKClient
 from claude_agent_sdk.types import HookMatcher
 from core.auth import get_sdk_env_vars, require_auth_token
+from core.backend_config import AgentBackend, get_agent_backend, get_backend_display_name
+from core.codex_client import CodexCLIClient, CodexClientOptions
 from linear_updater import is_linear_enabled
 from prompts_pkg.project_context import detect_project_capabilities, load_project_index
 from security import bash_security_hook
+
+
+# Type alias for any supported agent client
+AgentClient = Union[ClaudeSDKClient, CodexCLIClient]
+
+
+class AgentClientProtocol(Protocol):
+    """Protocol defining the interface for agent clients."""
+
+    async def __aenter__(self) -> "AgentClientProtocol":
+        ...
+
+    async def __aexit__(self, exc_type, exc_val, exc_tb) -> None:
+        ...
+
+    async def query(self, message: str) -> None:
+        ...
+
+    def receive_response(self):
+        ...
 
 
 def _validate_custom_mcp_server(server: dict) -> bool:
@@ -755,3 +788,143 @@ def create_client(
         options_kwargs["agents"] = agents
 
     return ClaudeSDKClient(options=ClaudeAgentOptions(**options_kwargs))
+
+
+def create_codex_client(
+    project_dir: Path,
+    spec_dir: Path,
+    model: str,
+    agent_type: str = "coder",
+    max_thinking_tokens: int | None = None,
+) -> CodexCLIClient:
+    """
+    Create a Codex CLI client for agent sessions.
+
+    This creates a client using the OpenAI Codex CLI as the backend instead
+    of Claude Code. The client implements a compatible interface for seamless
+    integration with the existing agent system.
+
+    Args:
+        project_dir: Root directory for the project (working directory)
+        spec_dir: Directory containing the spec (for settings file)
+        model: Model to use (e.g., "o4-mini", "o3", "gpt-4.1")
+        agent_type: Agent type identifier (used for logging/display)
+        max_thinking_tokens: Ignored for Codex (kept for interface compatibility)
+
+    Returns:
+        Configured CodexCLIClient
+    """
+    # Get OpenAI API key
+    openai_api_key = os.environ.get("OPENAI_API_KEY")
+    if not openai_api_key:
+        raise ValueError(
+            "OPENAI_API_KEY not set. Required for Codex CLI backend.\n"
+            "Set OPENAI_API_KEY in your .env file."
+        )
+
+    # Build system prompt similar to Claude client
+    project_index, project_capabilities = _get_cached_project_data(project_dir)
+
+    system_prompt = (
+        f"You are an expert full-stack developer building production-quality software. "
+        f"Your working directory is: {project_dir.resolve()}\n"
+        f"Your filesystem access is RESTRICTED to this directory only. "
+        f"Use relative paths (starting with ./) for all file operations. "
+        f"Never use absolute paths or try to access files outside your working directory.\n\n"
+        f"You follow existing code patterns, write clean maintainable code, and verify "
+        f"your work through thorough testing. You communicate progress through Git commits "
+        f"and build-progress.txt updates."
+    )
+
+    # Include CLAUDE.md if enabled and present (works for both backends)
+    if should_use_claude_md():
+        claude_md_content = load_claude_md(project_dir)
+        if claude_md_content:
+            system_prompt = f"{system_prompt}\n\n# Project Instructions (from CLAUDE.md)\n\n{claude_md_content}"
+
+    print(f"Agent Backend: {get_backend_display_name(AgentBackend.CODEX)}")
+    print(f"   - Model: {model}")
+    print(f"   - Working directory: {project_dir.resolve()}")
+    print(f"   - Agent type: {agent_type}")
+    print()
+
+    # Create Codex client options
+    options = CodexClientOptions(
+        model=model,
+        system_prompt=system_prompt,
+        cwd=str(project_dir.resolve()),
+        env={"OPENAI_API_KEY": openai_api_key},
+        approval_mode="full-auto",  # Non-interactive mode for autonomous operation
+    )
+
+    return CodexCLIClient(options=options)
+
+
+def create_agent_client(
+    project_dir: Path,
+    spec_dir: Path,
+    model: str | None = None,
+    agent_type: str = "coder",
+    max_thinking_tokens: int | None = None,
+    output_format: dict | None = None,
+    agents: dict | None = None,
+) -> AgentClient:
+    """
+    Create an agent client using the configured backend.
+
+    This is the primary entry point for creating agent clients. It automatically
+    selects between Claude Code and Codex CLI based on the AGENT_BACKEND
+    environment variable.
+
+    Args:
+        project_dir: Root directory for the project (working directory)
+        spec_dir: Directory containing the spec (for settings file)
+        model: Model to use (None = use backend default)
+        agent_type: Agent type identifier from AGENT_CONFIGS
+        max_thinking_tokens: Token budget for extended thinking (Claude only)
+        output_format: Optional structured output format (Claude only)
+        agents: Optional dict of subagent definitions (Claude only)
+
+    Returns:
+        Configured agent client (ClaudeSDKClient or CodexCLIClient)
+
+    Raises:
+        ValueError: If backend configuration is invalid
+
+    Environment:
+        AGENT_BACKEND: "claude" (default) or "codex"
+    """
+    from core.backend_config import get_default_model
+
+    backend = get_agent_backend()
+
+    # Use default model for backend if not specified
+    if model is None:
+        model = get_default_model(backend)
+
+    if backend == AgentBackend.CLAUDE:
+        return create_client(
+            project_dir=project_dir,
+            spec_dir=spec_dir,
+            model=model,
+            agent_type=agent_type,
+            max_thinking_tokens=max_thinking_tokens,
+            output_format=output_format,
+            agents=agents,
+        )
+    elif backend == AgentBackend.CODEX:
+        # Codex doesn't support output_format or subagents
+        if output_format:
+            logger.warning("output_format is not supported by Codex backend (ignored)")
+        if agents:
+            logger.warning("subagents are not supported by Codex backend (ignored)")
+
+        return create_codex_client(
+            project_dir=project_dir,
+            spec_dir=spec_dir,
+            model=model,
+            agent_type=agent_type,
+            max_thinking_tokens=max_thinking_tokens,
+        )
+    else:
+        raise ValueError(f"Unsupported agent backend: {backend}")
